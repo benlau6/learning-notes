@@ -49,6 +49,26 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
 
 - [Building and distribution](https://pyo3.rs/main/building_and_distribution.html)
 
+### Error handling
+
+- [Don't use anyhow in PyO3](https://www.reddit.com/r/learnrust/comments/nhvp51/is_anybody_using_anyhow_with_pyo3/)
+  - try `thiserror`
+  - use `map_err` to convert rust error to python error
+
+    ```rust
+    use pyo3::prelude::*;
+    use pyo3::exceptions::PyFileNotFoundError;
+
+    fn rust_function() -> std::io::Result<usize>{
+        Ok(42)
+    }
+
+    #[pyfunction]
+    fn foo() -> PyResult<usize>{
+        rust_function().map_err(|_| PyFileNotFoundError::new_err("oops"))
+    }
+    ```
+
 ## Rust
 
 ### Readings
@@ -133,7 +153,7 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
 
 - The glob operator `*` will bring all public items defined in a path into scope, which is often used when testing to bring everything under test into the tests module
 
-### Error handling
+### Rust to Python Error handling
 
 - [Unrecoverable Errors with panic!](https://doc.rust-lang.org/book/ch09-01-unrecoverable-errors-with-panic.html)
 - [Recoverable Errors with Result](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html)
@@ -146,6 +166,16 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
     - The bad state is something that is unexpected, as opposed to something that will likely happen occasionally, like a user entering data in the wrong format.
     - Your code after this point needs to rely on not being in this bad state, rather than checking for the problem at every step.
     - There’s not a good way to encode this information in the types you use
+- [anyhow vs thiserror](https://www.reddit.com/r/rust/comments/uevmnx/what_crates_would_you_consider_essential/)
+  - Use Anyhow if you don't care what error type your functions return, you just want it to be easy. This is common in application code. Use thiserror if you are a library that wants to design your own dedicated error type(s) so that on failures the caller gets exactly the information that you choose.
+  - Use thiserror if you care about designing your own dedicated error type(s) so that the caller receives exactly the information that you choose in the event of failure. This most often applies to library-like code. Use Anyhow if you don't care what error type your functions return, you just want it to be easy. This is common in application-like code.
+  - Essentially, it's a clean way to bubble up errors in a binary program. Instead of having to handle multiple error types and the boilerplate that requires, you can pass all errors into anyhow and handle them from there.
+  - It makes more sense if you take thiserror into consideration as well.
+  - thiserror: You want to easy convert errors into a single error type that you can just return as result so the user knows what went wrong. This is useful for libraries that just want to easily tell you, as the user of the library, that sqlx didn't find your database or whatever.
+  - anyhow: You want to easily convert any error into something you can bubble up with ? in a function. You absolutely don't give a damn since your application most likely handles errors at a centralized place or just can't work with any error that might happen (no point in running if your database is gone or a crucial file doesn't exist, right?) so you just bubble up with ? to main (which then must return a Result or you unwrap there) that then crashes and vomits the stack trace to your terminal. This is for applications that know how and when errors are handled and just want an easy way to use ? if they don't give a damn. Of course in a library, you don't have that luxury because you don't know how your library will be used.
+  - So, basically, lets say you write curl but in rust. Like, curs or whatever (you can steal that if you think that's a good idea).
+  - in libcurs you'd use thiserror to return a CursError enum for every single error that this lib can bubble up to the caller. You do that so that it's transparent for the user, who then can just look at that enum and sees that any std::io::Error is wrapped in CursError::IoError or whatever, and easy for you since all errors you can expect can be .into'ed into your error type.
+  - But in the binary curs you just use anyhow. You might use errors as flow control but if you don't you can just make the main function return anyhow::Result<()> and ? every single bad result up the call stack until it hits main and tells the user what the issue is. Doesn't matter if it's your own CursError, std::io::Error, a serde error, a dotenv error, whatever. It just doesn't matter. It all can be bubbled up to main.
 
 ### Generics
 
@@ -155,9 +185,12 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
 
 - Unit struct: `struct QuitMessage;`
 - Tuple struct: `struct WriteMessage(String);` or `struct ChangeColorMessage(i32, i32, i32)`
+- To use the impl Trait, we need to import the struct and the trait (impl not needed)
+- [serde tag cannot be used for deserialize in struct](https://github.com/serde-rs/serde/pull/1448)
 
 ### Enum
 
+- Enum variants are variants, not types. So there are no enum of predefined structs. But variants can take different types, including structs.
 - Zero-variant enum: `enum QuitMessage`
 - [Why Rust enums are so cool](https://hashrust.com/blog/why-rust-enums-are-so-cool/)
 - [Rust Examples - Enum](https://doc.rust-lang.org/rust-by-example/custom_types/enum.html)
@@ -247,6 +280,11 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
   - Rust tries to be as explicit as possible whenever it allocates memory on the heap. So if your function returns a pointer-to-trait-on-heap in this way, you need to write the return type with the dyn keyword, e.g. `Box<dyn Animal>`.
 - [Box around traits](https://dhghomon.github.io/easy_rust/Chapter_54.html)
 - [Don't use boxed trait objects](https://bennett.dev/dont-use-boxed-trait-objects-for-struct-internals/)
+- Why a function cannot return `dyn Trait`?
+  - `dyn Trait` is trait object and trait object is DST (Dynamically Sized Types)
+  - Functions cannot return DST
+    - You can return a `Box<dyn Trait>` which is dynamic dispatch
+    - or use impl Trait for return type deduction
 
 #### Impl Trait
 
@@ -258,10 +296,22 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
   - Similarly, the concrete types of iterators could become very complex, incorporating the types of all previous iterators in a chain. Returning impl Iterator means that a function only exposes the Iterator trait as a bound on its return type, instead of explicitly specifying all of the other iterator types involved.
   - In argument position, impl Trait is very similar in semantics to a generic type parameter. However, there are significant differences between the two in return position. With impl Trait, unlike with a generic type parameter, the function chooses the return type, and the caller cannot choose the return type.
   - impl Trait can only appear as a parameter or return type of a free or inherent function. It cannot appear inside implementations of traits, nor can it be the type of a let binding or appear inside a type alias.
+- [Impl Trait Initiative](https://rust-lang.github.io/impl-trait-initiative/explainer.html)
+- [Rust By Example - Impl Trait](https://doc.rust-lang.org/rust-by-example/trait/impl_trait.html)
 
-#### Trait Bound
+#### Impl Trait vs Trait object (dyn Trait)
 
-- [Trait and lifetime bounds](https://doc.rust-lang.org/reference/trait-bounds.html)
+- [Long forum thread of users discussing the difference](https://users.rust-lang.org/t/difference-between-returning-dyn-box-trait-and-impl-trait/57640/3)
+  - dyn Trait means that it is a proper type in itself (a concrete type), and that the same dyn Trait can be created from multiple, distinct concrete types.
+  - impl Trait is a completely static, compile-time-only construct. The single, concrete type behind impl Trait is known to the compiler; it just hides it from the programmer intentionally.
+  - a given impl Trait cannot be created from several, distinct types.
+  - impl Trait is not a proper type in itself, it's a placeholder for a concrete type.
+  - When to use which?
+    - Sometimes, you want dynamic dispatch, because you need function pointers and vtables, and maybe you want to store heterogeneous values in a collection
+    - When you are building a data structure out of types that you don't necessarily know upfront, you might also want to use Box<dyn Trait> instead of making every type of the data structure generic.
+    - In contrast, impl Trait is useful when you have a single, concrete type that you want to hide for some reason, or if you are simply too lazy to type it out
+    - impl Trait can also be used for returning closures, of which the type simply cannot be named.
+- [dyn Trait and impl Trait in Rust](https://www.ncameron.org/blog/dyn-trait-and-impl-trait-in-rust/)
 
 ### Enum vs trait objects
 
@@ -274,6 +324,15 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
   - Even when living outside of a Box, trait objects require pointer-based access, which in Rust can reduce usability compared to enums since mutable data cannot be aliased. Enums do not require pointer indirection, for example they can be stored in containers as-is.
 - Traits do not support downcasting - Rust is not inheritance/subtyping-based language, and it gives you another set of abstractions. Moreover, what you want to do is unsound - traits are open (everyone can implement them for anything), so even if in your case match *f covers all possible cases, in general the compiler can't know that.
 - If you know the set of structures implementing your trait in advance, just use enum, it's a perfect tool for this. They allow you to statically match on a closed set of variants
+- [Enum or Trait Object](https://www.possiblerust.com/guide/enum-or-trait-object)
+- [Stackoverflow: Should I use enums or boxed trait objects to emulate polymorphism?](https://stackoverflow.com/questions/52240099/should-i-use-enums-or-boxed-trait-objects-to-emulate-polymorphism)
+  - If you want to write a function which can operate on both Coordinate and Quaternion using a trait, then the only operations you will be able to perform are those described in the Axes trait
+  - For instance, giving the implementation of Axes you gave, there would be no way for you to simply retrieve the (X,Y,Z) tuple via the Axes interface. If you needed to do that at some point, you would have to add a new method.
+- [Personal Blog: Polymorphism in Rust: Enums vs Traits](https://www.mattkennedy.io/blog/rust_polymorphism/)
+
+#### Trait Bound
+
+- [Trait and lifetime bounds](https://doc.rust-lang.org/reference/trait-bounds.html)
 
 ### Typestate and builder
 
@@ -316,9 +375,12 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
 - ["Type-Driven API Design in Rust" by Will Crichton](https://www.youtube.com/watch?v=bnnacleqg6k)
 - [Type-Driven API Design in Rust - Typestate](https://willcrichton.net/rust-api-type-patterns/typestate.html)
 - [Typestates in Rust](https://yoric.github.io/post/rust-typestate/)
+- [Typestate details on my gist](https://gist.github.com/benlau6/6ccb80bfbbe4bab02e46f18b8deb4ba0)
 
 ### Finite State Machine
 
+- [github/stagig: Hierarchical state machines for designing event-driven systems](https://github.com/mdeloof/statig#shared-storage)
+  - The typestate pattern is very useful for designing an API as it is able to enforce the validity of operations at compile time by making each state a unique type. But statig is designed to model a dynamic system where events originate externally and the order of operations is determined at run time.
 - [Pretty State Machine Patterns in Rust](https://hoverbear.org/blog/rust-state-machine-pattern/)
 - [A Fistful of States: More State Machine Patterns in Rust](https://deislabs.io/posts/a-fistful-of-states/)
 - [Regex Library in Rust from Scratch (Finite-State Machines)](https://www.youtube.com/watch?v=MH56D5M9xSQ)
@@ -383,6 +445,10 @@ Notes on rust, sveltekit, design patterns, software architectures, and more
 ### Software Architecture
 
 - [2021-08-21 - Hexagonal architecture in Rust #1 - Domain](https://alexis-lozano.com/hexagonal-architecture-in-rust-1/)
+
+### Mongodb
+
+- Document.to_string() is different from serde_json::to_string() String from Document.to_string() is not valid JSON which cannot be parsed by serde_json::from_str().
 
 ## Sveltekit
 
